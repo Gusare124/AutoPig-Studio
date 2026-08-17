@@ -319,7 +319,7 @@ def save_config_api(cfg: ConfigUpdate):
 
 
 @app.post("/api/test-connectivity")
-def test_connectivity_api(cfg: dict):
+def connectivity_api(cfg: dict):
     try:
         client = get_openai_client(cfg.get("api_key"), cfg.get("base_url"), cfg.get("proxy", "auto"))
         start_t = time.time()
@@ -332,7 +332,7 @@ def test_connectivity_api(cfg: dict):
 
 
 @app.post("/api/test-models-usability")
-def test_models_usability_api(cfg: dict):
+def models_usability_api(cfg: dict):
     try:
         txt_client = get_text_client(cfg)
         test_text_model = cfg.get("text_model", "gemini-2.5-flash")
