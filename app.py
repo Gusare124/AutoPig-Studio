@@ -1,5 +1,6 @@
 import sys
 import os
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import base64
@@ -40,6 +41,7 @@ def _safe_slug(value: str) -> str:
     slug = re.sub(r"[^A-Za-z0-9_-]+", "-", str(value or "custom")).strip("-_")
     return slug[:80] or "custom"
 
+
 def auto_detect_proxy() -> str:
     """智能自动探测本地代理端口与系统代理"""
     for env_key in ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"]:
@@ -62,6 +64,7 @@ def auto_detect_proxy() -> str:
             pass
     _proxy_cache.update(value=detected, checked_at=now)
     return detected
+
 
 class AppConfig(BaseModel):
     model_config = ConfigDict(extra="ignore")
@@ -99,6 +102,7 @@ class ConfigUpdate(BaseModel):
 
 DEFAULT_CONFIG = AppConfig().model_dump()
 
+
 def load_config():
     if os.path.exists(CONFIG_FILE):
         try:
@@ -108,9 +112,11 @@ def load_config():
             pass
     return DEFAULT_CONFIG.copy()
 
+
 def save_config(cfg):
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(cfg, f, ensure_ascii=False, indent=2)
+
 
 config = load_config()
 os.makedirs(os.path.join(BASE_DIR, config.get("output_dir", "./output_pigs")), exist_ok=True)
@@ -123,6 +129,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 
 def get_openai_client(api_key: str, base_url: str, proxy_val: str = "auto"):
     active_proxy = auto_detect_proxy() if (proxy_val == "auto" or not proxy_val) else proxy_val
@@ -138,17 +145,20 @@ def get_openai_client(api_key: str, base_url: str, proxy_val: str = "auto"):
         base_url=base_url or "https://api.apifast.tech/v1",
     )
 
+
 def get_text_client(cfg=None):
     c = cfg or config
     if c.get("dual_api") and c.get("text_api_key"):
         return get_openai_client(c.get("text_api_key"), c.get("text_base_url"), c.get("proxy", "auto"))
     return get_openai_client(c.get("api_key"), c.get("base_url"), c.get("proxy", "auto"))
 
+
 def get_image_client(cfg=None):
     c = cfg or config
     if c.get("dual_api") and c.get("image_api_key"):
         return get_openai_client(c.get("image_api_key"), c.get("image_base_url"), c.get("proxy", "auto"))
     return get_openai_client(c.get("api_key"), c.get("base_url"), c.get("proxy", "auto"))
+
 
 def decode_image_data(text: str) -> Image.Image:
     b64_match = re.search(r'data:image/[^;]+;base64,([A-Za-z0-9+/=\s]+)', text)
@@ -169,14 +179,17 @@ def decode_image_data(text: str) -> Image.Image:
     except Exception:
         return None
 
+
 # ================= 增量新增：DashScope / qwen-image 原生生图通道 =================
 def _is_dashscope_compatible(client) -> bool:
     base = str(getattr(client, "base_url", "") or "").lower()
     return "dashscope.aliyuncs.com/compatible-mode" in base
 
+
 def _dashscope_image_generate(client, model, prompt, images):
     parts = urlsplit(str(getattr(client, "base_url", "")))
-    native_url = urlunsplit((parts.scheme, parts.netloc, "/api/v1/services/aigc/multimodal-generation/generation", "", ""))
+    native_url = urlunsplit(
+        (parts.scheme, parts.netloc, "/api/v1/services/aigc/multimodal-generation/generation", "", ""))
     content = [{"image": im} for im in images] + [{"text": prompt}]
     body = {
         "model": model,
@@ -187,6 +200,7 @@ def _dashscope_image_generate(client, model, prompt, images):
     r = requests.post(native_url, headers=headers, json=body, timeout=300)
     r.raise_for_status()
     return r.json()
+
 
 def _collect_image_sources(node, out):
     if isinstance(node, dict):
@@ -202,6 +216,7 @@ def _collect_image_sources(node, out):
         for item in node:
             _collect_image_sources(item, out)
 
+
 def _dashscope_image_sources(raw_obj) -> list:
     sources = []
     _collect_image_sources(raw_obj, sources)
@@ -212,6 +227,7 @@ def _dashscope_image_sources(raw_obj) -> list:
             seen.add(s)
             unique.append(s)
     return unique
+
 
 def _download_image(src) -> Image.Image:
     img = decode_image_data(src)
@@ -227,6 +243,7 @@ def _download_image(src) -> Image.Image:
             return None
     return None
 
+
 def _dashscope_render_image(client, model, prompt, images):
     try:
         raw_obj = _dashscope_image_generate(client, model, prompt, images)
@@ -241,18 +258,23 @@ def _dashscope_render_image(client, model, prompt, images):
             return img, None
     return None, f"DashScope 原生接口返回了图片地址但下载失败 (共 {len(sources)} 个候选源)"
 
+
 # ================= 静态与媒体路由 =================
 @app.get("/api/hero-image")
 def get_hero_image_api():
     base_img = os.path.join(BASE_DIR, config.get("base_img_path", "pig_hero.png"))
-    return FileResponse(base_img) if os.path.exists(base_img) else JSONResponse(status_code=404, content={"message": "Not found"})
+    return FileResponse(base_img) if os.path.exists(base_img) else JSONResponse(status_code=404,
+                                                                                content={"message": "Not found"})
+
 
 @app.get("/api/scholar-image")
 def get_scholar_image_api():
     scholar_img = os.path.join(BASE_DIR, "pig_scholar.png")
     if os.path.exists(scholar_img): return FileResponse(scholar_img)
     hero_img = os.path.join(BASE_DIR, config.get("base_img_path", "pig_hero.png"))
-    return FileResponse(hero_img) if os.path.exists(hero_img) else JSONResponse(status_code=404, content={"message": "Not found"})
+    return FileResponse(hero_img) if os.path.exists(hero_img) else JSONResponse(status_code=404,
+                                                                                content={"message": "Not found"})
+
 
 @app.get("/api/pig-gif")
 def get_pig_gif_api():
@@ -261,12 +283,16 @@ def get_pig_gif_api():
         if os.path.exists(gif_path):
             return FileResponse(gif_path, media_type="image/gif", headers={"Cache-Control": "no-cache"})
     hero_img = os.path.join(BASE_DIR, config.get("base_img_path", "pig_hero.png"))
-    return FileResponse(hero_img) if os.path.exists(hero_img) else JSONResponse(status_code=404, content={"message": "Not found"})
+    return FileResponse(hero_img) if os.path.exists(hero_img) else JSONResponse(status_code=404,
+                                                                                content={"message": "Not found"})
+
 
 @app.get("/api/oink-sound")
 def get_oink_sound_api():
     sound_path = os.path.join(BASE_DIR, "oink.wav")
-    return FileResponse(sound_path, media_type="audio/wav") if os.path.exists(sound_path) else JSONResponse(status_code=404, content={"message": "Not found"})
+    return FileResponse(sound_path, media_type="audio/wav") if os.path.exists(sound_path) else JSONResponse(
+        status_code=404, content={"message": "Not found"})
+
 
 @app.get("/videos.json")
 def get_videos_json_api():
@@ -275,11 +301,13 @@ def get_videos_json_api():
             return FileResponse(p, media_type="application/json")
     return JSONResponse(content={"current_version": None, "general_guides": []})
 
+
 @app.get("/api/config")
 def get_config_api():
     cfg = load_config()
     cfg["detected_proxy"] = auto_detect_proxy() or "直连 (未检测到本地代理)"
     return cfg
+
 
 @app.post("/api/config")
 def save_config_api(cfg: ConfigUpdate):
@@ -288,6 +316,7 @@ def save_config_api(cfg: ConfigUpdate):
     os.makedirs(os.path.join(BASE_DIR, config.get("output_dir", "./output_pigs")), exist_ok=True)
     save_config(config)
     return {"status": "ok", "config": config}
+
 
 @app.post("/api/test-connectivity")
 def test_connectivity_api(cfg: dict):
@@ -301,6 +330,7 @@ def test_connectivity_api(cfg: dict):
     except Exception as e:
         return {"status": "error", "message": str(e), "log": traceback.format_exc()}
 
+
 @app.post("/api/test-models-usability")
 def test_models_usability_api(cfg: dict):
     try:
@@ -311,7 +341,8 @@ def test_models_usability_api(cfg: dict):
         text_ok, text_msg = False, ""
         try:
             start_t = time.time()
-            res = txt_client.chat.completions.create(model=test_text_model, messages=[{"role": "user", "content": "1+1="}], max_tokens=5)
+            res = txt_client.chat.completions.create(model=test_text_model,
+                                                     messages=[{"role": "user", "content": "1+1="}], max_tokens=5)
             text_ok, text_msg = True, f"响应正常 ({int((time.time() - start_t) * 1000)}ms)"
         except Exception as e_text:
             text_msg = f"调用失败: {str(e_text)}"
@@ -328,15 +359,17 @@ def test_models_usability_api(cfg: dict):
     except Exception as e:
         return {"status": "error", "message": str(e), "log": traceback.format_exc()}
 
+
 # ================= 模式 1：智能风格文字量产 =================
 @app.post("/api/generate-plan")
 def generate_plan_api(payload: dict):
     try:
         count = max(1, min(int(payload.get("count", 3)), 20))
     except (TypeError, ValueError):
-        return JSONResponse(status_code=400, content={"status": "error", "message": "生成数量必须是 1 到 20 之间的整数"})
+        return JSONResponse(status_code=400,
+                            content={"status": "error", "message": "生成数量必须是 1 到 20 之间的整数"})
     style_vibe = payload.get("style_vibe", "趣味职业与生活角色")
-    
+
     out_dir = os.path.join(BASE_DIR, config.get("output_dir", "./output_pigs"))
     existing = []
     if os.path.exists(out_dir):
@@ -344,9 +377,9 @@ def generate_plan_api(payload: dict):
             if f.startswith("pig_") and f.endswith(".png"):
                 slug = re.sub(r'_\d+$', '', f[4:-4])
                 existing.append(slug)
-    
+
     exclude_text = f"请勿重复或相似以下已有主题：{', '.join(set(existing))}。" if existing else ""
-    
+
     system_prompt = (
         "你是顶级游戏美术设计师。构思小猪主题，仅返回纯JSON数组格式，严禁返回任何Markdown标签或额外文字。\n"
         "每个对象包含：\n"
@@ -385,15 +418,17 @@ def generate_plan_api(payload: dict):
 
     return JSONResponse(status_code=500, content={"status": "error", "message": f"策划失败: {str(last_err)}"})
 
+
 @app.post("/api/render-image")
 def render_image_api(payload: dict):
     theme = payload.get("theme")
     features = payload.get("features")
     extra_feedback = payload.get("extra_feedback", "")
-    
+
     base_img_path = os.path.join(BASE_DIR, config.get("base_img_path", "pig_hero.png"))
     if not os.path.exists(base_img_path):
-        return JSONResponse(status_code=400, content={"status": "error", "message": f"基准参考图 '{base_img_path}' 不存在！"})
+        return JSONResponse(status_code=400,
+                            content={"status": "error", "message": f"基准参考图 '{base_img_path}' 不存在！"})
 
     with open(base_img_path, "rb") as f:
         hero_b64 = base64.b64encode(f.read()).decode("utf-8")
@@ -418,7 +453,8 @@ def render_image_api(payload: dict):
         if img:
             buffered = io.BytesIO()
             img.save(buffered, format="PNG")
-            return {"status": "ok", "image_b64": f"data:image/png;base64,{base64.b64encode(buffered.getvalue()).decode('utf-8')}"}
+            return {"status": "ok",
+                    "image_b64": f"data:image/png;base64,{base64.b64encode(buffered.getvalue()).decode('utf-8')}"}
         return JSONResponse(status_code=500, content={"status": "error", "message": f"图像生成失败：{qwhy}"})
 
     # 原版 gemini 多模态生图
@@ -445,7 +481,8 @@ def render_image_api(payload: dict):
             if img:
                 buffered = io.BytesIO()
                 img.save(buffered, format="PNG")
-                return {"status": "ok", "image_b64": f"data:image/png;base64,{base64.b64encode(buffered.getvalue()).decode('utf-8')}"}
+                return {"status": "ok",
+                        "image_b64": f"data:image/png;base64,{base64.b64encode(buffered.getvalue()).decode('utf-8')}"}
         except Exception as e:
             last_err = e
             continue
@@ -453,19 +490,21 @@ def render_image_api(payload: dict):
     detail = f": {last_err}" if last_err else ""
     return JSONResponse(status_code=500, content={"status": "error", "message": f"图像生成失败{detail}"})
 
+
 # ================= 模式 2：角色参考图转小猪（玩偶穿搭黄金方案） =================
 @app.post("/api/render-character-pig")
 def render_character_pig_api(payload: dict):
     character_name = payload.get("character_name", "").strip() or "特定角色"
     character_b64 = payload.get("character_image_b64", "")
     extra_feedback = payload.get("extra_feedback", "")
-    
+
     if "," in character_b64:
         character_b64 = character_b64.split(",", 1)[1]
 
     base_img_path = os.path.join(BASE_DIR, config.get("base_img_path", "pig_hero.png"))
     if not os.path.exists(base_img_path):
-        return JSONResponse(status_code=400, content={"status": "error", "message": f"基准参考图 '{base_img_path}' 不存在！"})
+        return JSONResponse(status_code=400,
+                            content={"status": "error", "message": f"基准参考图 '{base_img_path}' 不存在！"})
 
     with open(base_img_path, "rb") as f:
         hero_b64 = base64.b64encode(f.read()).decode("utf-8")
@@ -483,7 +522,7 @@ def render_character_pig_api(payload: dict):
         "3. 标志性小点缀：1个核心代表物（如：微型十字发夹/专属胸针）。\n"
         "格式要求：直接输出一段流畅的穿戴描述，不要带序号或解释。"
     )
-    
+
     txt_models = [config.get("text_model", "gemini-2.5-flash"), "gemini-2.5-flash", "gemini-3-flash-preview"]
     for tm in txt_models:
         try:
@@ -526,7 +565,8 @@ def render_character_pig_api(payload: dict):
         if img:
             buffered = io.BytesIO()
             img.save(buffered, format="PNG")
-            return {"status": "ok", "image_b64": f"data:image/png;base64,{base64.b64encode(buffered.getvalue()).decode('utf-8')}"}
+            return {"status": "ok",
+                    "image_b64": f"data:image/png;base64,{base64.b64encode(buffered.getvalue()).decode('utf-8')}"}
         return JSONResponse(status_code=500, content={"status": "error", "message": f"未能生成有效图片：{qwhy}"})
 
     # 原版 gemini 双图多模态生图
@@ -553,14 +593,16 @@ def render_character_pig_api(payload: dict):
             if img:
                 buffered = io.BytesIO()
                 img.save(buffered, format="PNG")
-                return {"status": "ok", "image_b64": f"data:image/png;base64,{base64.b64encode(buffered.getvalue()).decode('utf-8')}"}
+                return {"status": "ok",
+                        "image_b64": f"data:image/png;base64,{base64.b64encode(buffered.getvalue()).decode('utf-8')}"}
         except Exception as e:
             last_err = e
             continue
 
     detail = f": {last_err}" if last_err else ""
     return JSONResponse(status_code=500, content={"status": "error", "message": f"未能生成有效图片{detail}"})
-    
+
+
 # ================= 保存与画廊管理 =================
 @app.post("/api/save-image")
 def save_image_api(payload: dict):
@@ -580,6 +622,7 @@ def save_image_api(payload: dict):
         f.write(base64.b64decode(img_b64))
     return {"status": "ok", "filename": os.path.basename(save_path)}
 
+
 @app.post("/api/delete-image")
 def delete_image_api(payload: dict):
     filename = _safe_filename(payload.get("filename", ""))
@@ -589,13 +632,14 @@ def delete_image_api(payload: dict):
     target = os.path.realpath(os.path.join(out_dir, filename))
     if os.path.commonpath([out_dir, target]) != out_dir:
         return JSONResponse(status_code=400, content={"status": "error", "message": "文件名无效"})
-    if os.path.exists(target): 
+    if os.path.exists(target):
         try:
             os.remove(target)
             return {"status": "ok"}
         except Exception as e:
             return JSONResponse(status_code=500, content={"status": "error", "message": str(e)})
     return JSONResponse(status_code=404, content={"status": "error", "message": "文件不存在"})
+
 
 @app.get("/api/gallery")
 def get_gallery_api():
@@ -608,7 +652,7 @@ def get_gallery_api():
             imgs.append({
                 "filename": f,
                 "url": f"/api/gallery/image/{f}",
-                "size": f"{os.path.getsize(p)/1024:.1f} KB"
+                "size": f"{os.path.getsize(p) / 1024:.1f} KB"
             })
     return {"images": imgs}
 
@@ -622,6 +666,7 @@ def get_gallery_image_api(filename: str):
         return JSONResponse(status_code=404, content={"message": "Not found"})
     return FileResponse(target)
 
+
 @app.post("/api/upload-base-img")
 async def upload_base_img_api(file: UploadFile = File(...)):
     dest = os.path.join(BASE_DIR, "pig_hero.png")
@@ -630,9 +675,11 @@ async def upload_base_img_api(file: UploadFile = File(...)):
     save_config(config)
     return {"status": "ok"}
 
+
 # 静态资源挂载
 app.mount("/", StaticFiles(directory=os.path.join(BASE_DIR, "static"), html=True), name="static")
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run(app, host="127.0.0.1", port=8000)

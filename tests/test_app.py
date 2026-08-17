@@ -1,10 +1,8 @@
-import base64
 import json
-import time
 
 import pytest
-from fastapi.testclient import TestClient
 from PIL import Image
+from fastapi.testclient import TestClient
 
 import app
 
