@@ -11,6 +11,7 @@ import socket
 import time
 import traceback
 import requests
+from urllib.parse import urlsplit, urlunsplit
 from fastapi import FastAPI, UploadFile, File
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -124,6 +125,78 @@ def decode_image_data(text: str) -> Image.Image:
         return Image.open(io.BytesIO(base64.b64decode(clean)))
     except Exception:
         return None
+
+# ================= 增量新增：DashScope / qwen-image 原生生图通道 =================
+def _is_dashscope_compatible(client) -> bool:
+    base = str(getattr(client, "base_url", "") or "").lower()
+    return "dashscope.aliyuncs.com/compatible-mode" in base
+
+def _dashscope_image_generate(client, model, prompt, images):
+    parts = urlsplit(str(getattr(client, "base_url", "")))
+    native_url = urlunsplit((parts.scheme, parts.netloc, "/api/v1/services/aigc/multimodal-generation/generation", "", ""))
+    content = [{"image": im} for im in images] + [{"text": prompt}]
+    body = {
+        "model": model,
+        "input": {"messages": [{"role": "user", "content": content}]},
+        "parameters": {"prompt_extend": True, "watermark": False},
+    }
+    headers = {"Authorization": f"Bearer {getattr(client, 'api_key', '')}", "Content-Type": "application/json"}
+    r = requests.post(native_url, headers=headers, json=body, timeout=300)
+    r.raise_for_status()
+    return r.json()
+
+def _collect_image_sources(node, out):
+    if isinstance(node, dict):
+        for k, v in node.items():
+            if k in ("image", "image_url", "url"):
+                if isinstance(v, str) and v:
+                    out.append(v)
+                elif isinstance(v, dict) and isinstance(v.get("url"), str) and v["url"]:
+                    out.append(v["url"])
+            else:
+                _collect_image_sources(v, out)
+    elif isinstance(node, list):
+        for item in node:
+            _collect_image_sources(item, out)
+
+def _dashscope_image_sources(raw_obj) -> list:
+    sources = []
+    _collect_image_sources(raw_obj, sources)
+    seen = set()
+    unique = []
+    for s in sources:
+        if s not in seen:
+            seen.add(s)
+            unique.append(s)
+    return unique
+
+def _download_image(src) -> Image.Image:
+    img = decode_image_data(src)
+    if img:
+        return img
+    s = str(src or "").strip()
+    if s.startswith("http://") or s.startswith("https://"):
+        try:
+            r = requests.get(s, timeout=30)
+            r.raise_for_status()
+            return Image.open(io.BytesIO(r.content))
+        except Exception:
+            return None
+    return None
+
+def _dashscope_render_image(client, model, prompt, images):
+    try:
+        raw_obj = _dashscope_image_generate(client, model, prompt, images)
+    except Exception as e:
+        return None, f"DashScope 原生接口调用失败: {e}"
+    sources = _dashscope_image_sources(raw_obj)
+    if not sources:
+        return None, "DashScope 原生接口响应中未找到 image 字段"
+    for src in sources:
+        img = _download_image(src)
+        if img:
+            return img, None
+    return None, f"DashScope 原生接口返回了图片地址但下载失败 (共 {len(sources)} 个候选源)"
 
 # ================= 静态与媒体路由 =================
 @app.get("/api/hero-image")
@@ -291,6 +364,17 @@ def render_image_api(payload: dict):
 
     client = get_image_client()
     configured_model = config.get("image_model", "gemini-3.1-flash-image-preview")
+
+    # 增量：DashScope(qwen-image) 原生生图通道，触发条件：image base_url 为 dashscope compatible-mode
+    if _is_dashscope_compatible(client):
+        img, qwhy = _dashscope_render_image(client, configured_model, prompt, [f"data:image/png;base64,{hero_b64}"])
+        if img:
+            buffered = io.BytesIO()
+            img.save(buffered, format="PNG")
+            return {"status": "ok", "image_b64": f"data:image/png;base64,{base64.b64encode(buffered.getvalue()).decode('utf-8')}"}
+        return JSONResponse(status_code=500, content={"status": "error", "message": f"图像生成失败：{qwhy}"})
+
+    # 原版 gemini 多模态生图
     models_to_try = [configured_model]
     for backup_model in ["gemini-3.1-flash-image-preview", "gemini-3.1-flash-image", "gemini-3-pro-image-preview"]:
         if backup_model not in models_to_try:
@@ -382,6 +466,20 @@ def render_character_pig_api(payload: dict):
 
     # 3. 双图多模态对照渲染 (图1: 小猪模板, 图2: 角色立绘)
     configured_img_model = config.get("image_model", "gemini-3.1-flash-image-preview")
+
+    # 增量：DashScope(qwen-image) 原生生图通道，触发条件：image base_url 为 dashscope compatible-mode
+    if _is_dashscope_compatible(img_client):
+        img, qwhy = _dashscope_render_image(
+            img_client, configured_img_model, prompt,
+            [f"data:image/png;base64,{hero_b64}", f"data:image/png;base64,{character_b64}"]
+        )
+        if img:
+            buffered = io.BytesIO()
+            img.save(buffered, format="PNG")
+            return {"status": "ok", "image_b64": f"data:image/png;base64,{base64.b64encode(buffered.getvalue()).decode('utf-8')}"}
+        return JSONResponse(status_code=500, content={"status": "error", "message": f"未能生成有效图片：{qwhy}"})
+
+    # 原版 gemini 双图多模态生图
     img_models_to_try = [configured_img_model]
     for backup_model in ["gemini-3.1-flash-image-preview", "gemini-3.1-flash-image", "gemini-3-pro-image-preview"]:
         if backup_model not in img_models_to_try:

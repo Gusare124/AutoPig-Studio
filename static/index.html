@@ -559,6 +559,7 @@
                   <span>🔑</span> 第一步：API 服务商模式选择与凭据配置
                 </h2>
                 <p class="text-xs text-slate-400 mt-0.5">可选择共用单一中转 API，或分别配置策划模型与生图模型的独立接口</p>
+                <p class="text-xs text-slate-400 mt-0.5">注：选用千问图像生成模型，必须用https://dashscope.aliyuncs.com/compatible-mode/v1作为生图模型的URL</p>
               </div>
               
               <div class="flex items-center gap-2 bg-brand-50 p-1 rounded-xl border border-brand-100 shrink-0">
@@ -644,7 +645,7 @@
               <!-- 2. 生图模型专用接口 -->
               <div class="p-4 bg-amber-50/40 rounded-2xl border border-amber-100 space-y-3">
                 <h4 class="font-bold text-xs text-amber-800 flex items-center gap-1.5">
-                  <span>🎨</span> 生图模型专用接口 (需支持 Gemini/DALL-E)
+                  <span>🎨</span> 生图模型专用接口 (需支持 Gemini/Qwen/DALL-E)
                 </h4>
                 <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
                   <input type="password" v-model="config.image_api_key" placeholder="生图 API Key (sk-...)" class="w-full px-3 py-2 bg-white border border-amber-200 rounded-xl text-xs font-mono">
@@ -966,7 +967,7 @@
             type: 'tip',
             tag: '💡 提示 1',
             title: '请确认 API 同时具备“文本策划”与“图像生成”权限',
-            content: '<p>请确保填写的 API 接口支持 <span style="color: #991b1b; font-weight: 800;">具备图像生成能力的多模态生图 AI</span>（例如 Gemini 3.1 Flash Image、DALL-E 3 等）。若仅配置纯文本模型（如 DeepSeek 官方接口），第一步策划会成功但画图阶段会报 500 错误。</p>'
+            content: '<p>请确保填写的 API 接口支持 <span style="color: #991b1b; font-weight: 800;">具备图像生成能力的多模态生图 AI</span>（例如 Gemini 3.1 Flash Image、qwen-image-3.0、DALL-E 3 等）。若仅配置纯文本模型（如 DeepSeek 官方接口），第一步策划会成功但画图阶段会报 500 错误。</p>'
           },
           {
             type: 'tip',
@@ -1007,7 +1008,7 @@
             type: 'qa',
             tag: 'Q2',
             title: '为什么提示词策划成功，但生图一直报 500 错误？',
-            content: '<p><b>可能原因：</b>当前填写的 API Key 节点只支持纯文本大模型，无绘图通道。<br><b>解决办法：</b>请在「API与高级设置」中切换为具备多模态生图权限的 API 中转节点或官方 Key（如 Gemini 3.1 Flash Image 或 DALL-E 3），或开启「双 API 分离」模式分别填入不同的 Key。</p>'
+            content: '<p><b>可能原因：</b>当前填写的 API Key 节点只支持纯文本大模型，无绘图通道。<br><b>解决办法：</b>请在「API与高级设置」中切换为具备多模态生图权限的 API 中转节点或官方 Key（如 Gemini 3.1 Flash Image、qwen-image-3.0 或 DALL-E 3），或开启「双 API 分离」模式分别填入不同的 Key。</p>'
           },
           {
             type: 'qa',
