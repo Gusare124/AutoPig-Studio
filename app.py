@@ -18,52 +18,95 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image
 from openai import OpenAI
+from pydantic import BaseModel, ConfigDict
 
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_FILE = os.path.join(BASE_DIR, "config.json")
+PROXY_CACHE_TTL = 60
+_proxy_cache = {"value": None, "checked_at": 0.0}
+
+
+def _safe_filename(value: str) -> str:
+    name = os.path.basename(str(value or "")).strip()
+    if name != str(value or "").strip() or name in {"", ".", ".."}:
+        return ""
+    return name
+
+
+def _safe_slug(value: str) -> str:
+    slug = re.sub(r"[^A-Za-z0-9_-]+", "-", str(value or "custom")).strip("-_")
+    return slug[:80] or "custom"
 
 def auto_detect_proxy() -> str:
     """智能自动探测本地代理端口与系统代理"""
     for env_key in ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"]:
         if os.environ.get(env_key):
             return os.environ.get(env_key)
+
+    now = time.monotonic()
+    if now - _proxy_cache["checked_at"] < PROXY_CACHE_TTL:
+        return _proxy_cache["value"] or ""
+
+    detected = ""
     for port in [7897, 7890, 10809, 10808, 20811]:
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                 s.settimeout(0.15)
                 if s.connect_ex(('127.0.0.1', port)) == 0:
-                    return f"http://127.0.0.1:{port}"
+                    detected = f"http://127.0.0.1:{port}"
+                    break
         except Exception:
             pass
-    return ""
+    _proxy_cache.update(value=detected, checked_at=now)
+    return detected
 
-DEFAULT_CONFIG = {
-    "api_key": "",
-    "base_url": "https://api.apifast.tech/v1",
-    "dual_api": False,
-    "text_api_key": "",
-    "text_base_url": "",
-    "image_api_key": "",
-    "image_base_url": "",
-    "proxy": "auto",
-    "base_img_path": "pig_hero.png",
-    "output_dir": "./output_pigs",
-    "text_model": "gemini-2.5-flash",
-    "image_model": "gemini-3.1-flash-image-preview",
-}
+class AppConfig(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    api_key: str = ""
+    base_url: str = "https://api.apifast.tech/v1"
+    dual_api: bool = False
+    text_api_key: str = ""
+    text_base_url: str = ""
+    image_api_key: str = ""
+    image_base_url: str = ""
+    proxy: str = "auto"
+    base_img_path: str = "pig_hero.png"
+    output_dir: str = "./output_pigs"
+    text_model: str = "gemini-2.5-flash"
+    image_model: str = "gemini-3.1-flash-image-preview"
+
+
+class ConfigUpdate(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    api_key: str | None = None
+    base_url: str | None = None
+    dual_api: bool | None = None
+    text_api_key: str | None = None
+    text_base_url: str | None = None
+    image_api_key: str | None = None
+    image_base_url: str | None = None
+    proxy: str | None = None
+    base_img_path: str | None = None
+    output_dir: str | None = None
+    text_model: str | None = None
+    image_model: str | None = None
+
+
+DEFAULT_CONFIG = AppConfig().model_dump()
 
 def load_config():
-    cfg = DEFAULT_CONFIG.copy()
     if os.path.exists(CONFIG_FILE):
         try:
             with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-                cfg.update(json.load(f))
+                return AppConfig.model_validate(json.load(f)).model_dump()
         except Exception:
             pass
-    return cfg
+    return DEFAULT_CONFIG.copy()
 
 def save_config(cfg):
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
@@ -76,7 +119,7 @@ os.makedirs(os.path.join(BASE_DIR, "static"), exist_ok=True)
 app = FastAPI(title="AutoPig Studio v1.1.0")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["http://127.0.0.1:8000", "http://localhost:8000"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -239,9 +282,10 @@ def get_config_api():
     return cfg
 
 @app.post("/api/config")
-def save_config_api(cfg: dict):
+def save_config_api(cfg: ConfigUpdate):
     global config
-    config.update(cfg)
+    config.update(cfg.model_dump(exclude_none=True))
+    os.makedirs(os.path.join(BASE_DIR, config.get("output_dir", "./output_pigs")), exist_ok=True)
     save_config(config)
     return {"status": "ok", "config": config}
 
@@ -287,7 +331,10 @@ def test_models_usability_api(cfg: dict):
 # ================= 模式 1：智能风格文字量产 =================
 @app.post("/api/generate-plan")
 def generate_plan_api(payload: dict):
-    count = int(payload.get("count", 3))
+    try:
+        count = max(1, min(int(payload.get("count", 3)), 20))
+    except (TypeError, ValueError):
+        return JSONResponse(status_code=400, content={"status": "error", "message": "生成数量必须是 1 到 20 之间的整数"})
     style_vibe = payload.get("style_vibe", "趣味职业与生活角色")
     
     out_dir = os.path.join(BASE_DIR, config.get("output_dir", "./output_pigs"))
@@ -380,6 +427,7 @@ def render_image_api(payload: dict):
         if backup_model not in models_to_try:
             models_to_try.append(backup_model)
 
+    last_err = None
     for m in models_to_try:
         try:
             resp = client.chat.completions.create(
@@ -398,10 +446,12 @@ def render_image_api(payload: dict):
                 buffered = io.BytesIO()
                 img.save(buffered, format="PNG")
                 return {"status": "ok", "image_b64": f"data:image/png;base64,{base64.b64encode(buffered.getvalue()).decode('utf-8')}"}
-        except Exception:
+        except Exception as e:
+            last_err = e
             continue
 
-    return JSONResponse(status_code=500, content={"status": "error", "message": "图像生成失败，请检查提示词或模型通道"})
+    detail = f": {last_err}" if last_err else ""
+    return JSONResponse(status_code=500, content={"status": "error", "message": f"图像生成失败{detail}"})
 
 # ================= 模式 2：角色参考图转小猪（玩偶穿搭黄金方案） =================
 @app.post("/api/render-character-pig")
@@ -485,6 +535,7 @@ def render_character_pig_api(payload: dict):
         if backup_model not in img_models_to_try:
             img_models_to_try.append(backup_model)
 
+    last_err = None
     for im in img_models_to_try:
         try:
             resp = img_client.chat.completions.create(
@@ -503,15 +554,17 @@ def render_character_pig_api(payload: dict):
                 buffered = io.BytesIO()
                 img.save(buffered, format="PNG")
                 return {"status": "ok", "image_b64": f"data:image/png;base64,{base64.b64encode(buffered.getvalue()).decode('utf-8')}"}
-        except Exception:
+        except Exception as e:
+            last_err = e
             continue
 
-    return JSONResponse(status_code=500, content={"status": "error", "message": "未能生成有效图片，请检查网络通道或提示词"})
+    detail = f": {last_err}" if last_err else ""
+    return JSONResponse(status_code=500, content={"status": "error", "message": f"未能生成有效图片{detail}"})
     
 # ================= 保存与画廊管理 =================
 @app.post("/api/save-image")
 def save_image_api(payload: dict):
-    slug = payload.get("slug", "custom")
+    slug = _safe_slug(payload.get("slug", "custom"))
     img_b64 = payload.get("image_b64", "").split(",", 1)[-1]
     if not img_b64:
         return JSONResponse(status_code=400, content={"status": "error", "message": "无图片数据"})
@@ -529,7 +582,13 @@ def save_image_api(payload: dict):
 
 @app.post("/api/delete-image")
 def delete_image_api(payload: dict):
-    target = os.path.join(BASE_DIR, config.get("output_dir", "./output_pigs"), payload.get("filename", ""))
+    filename = _safe_filename(payload.get("filename", ""))
+    if not filename:
+        return JSONResponse(status_code=400, content={"status": "error", "message": "文件名无效"})
+    out_dir = os.path.realpath(os.path.join(BASE_DIR, config.get("output_dir", "./output_pigs")))
+    target = os.path.realpath(os.path.join(out_dir, filename))
+    if os.path.commonpath([out_dir, target]) != out_dir:
+        return JSONResponse(status_code=400, content={"status": "error", "message": "文件名无效"})
     if os.path.exists(target): 
         try:
             os.remove(target)
@@ -543,16 +602,25 @@ def get_gallery_api():
     out_dir = os.path.join(BASE_DIR, config.get("output_dir", "./output_pigs"))
     if not os.path.exists(out_dir): return {"images": []}
     imgs = []
-    for f in sorted(os.listdir(out_dir), reverse=True):
+    for f in sorted(os.listdir(out_dir), key=lambda name: os.path.getmtime(os.path.join(out_dir, name)), reverse=True):
         if f.endswith((".png", ".jpg")):
             p = os.path.join(out_dir, f)
-            with open(p, "rb") as im:
-                imgs.append({
-                    "filename": f, 
-                    "data": f"data:image/png;base64,{base64.b64encode(im.read()).decode()}", 
-                    "size": f"{os.path.getsize(p)/1024:.1f} KB"
-                })
+            imgs.append({
+                "filename": f,
+                "url": f"/api/gallery/image/{f}",
+                "size": f"{os.path.getsize(p)/1024:.1f} KB"
+            })
     return {"images": imgs}
+
+
+@app.get("/api/gallery/image/{filename}")
+def get_gallery_image_api(filename: str):
+    filename = _safe_filename(filename)
+    out_dir = os.path.realpath(os.path.join(BASE_DIR, config.get("output_dir", "./output_pigs")))
+    target = os.path.realpath(os.path.join(out_dir, filename))
+    if not filename or os.path.commonpath([out_dir, target]) != out_dir or not os.path.isfile(target):
+        return JSONResponse(status_code=404, content={"message": "Not found"})
+    return FileResponse(target)
 
 @app.post("/api/upload-base-img")
 async def upload_base_img_api(file: UploadFile = File(...)):

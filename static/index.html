@@ -231,6 +231,10 @@
                   <span v-else class="text-base">✨</span>
                   <span>{{ isPlanning ? 'AI 构思策划中...' : isRendering ? '批量绘制中...' : '开始量产小猪' }}</span>
                 </button>
+                <button v-if="isRendering" @click="cancelBatchGeneration"
+                        class="px-4 py-3 bg-rose-50 hover:bg-rose-100 text-rose-600 font-bold text-xs rounded-2xl border border-rose-200 transition">
+                  停止生成
+                </button>
 
                 <transition name="toast-fade">
                   <div v-if="notice.show" 
@@ -285,6 +289,13 @@
 
           <!-- 任务列表卡片 -->
           <div v-if="tasks.length > 0" class="relative z-10">
+            <div v-if="tasks.some(task => task.status === 'done' && task.image)" class="mb-4 flex items-center justify-between gap-3">
+              <p class="text-xs text-slate-500 font-medium">已完成的作品可单张保存，或一次性全部存入图库。</p>
+              <button @click="saveAllTasks" :disabled="isSavingAll"
+                      class="shrink-0 px-4 py-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 text-xs font-bold rounded-xl border border-emerald-200 transition disabled:opacity-50">
+                {{ isSavingAll ? '正在保存...' : '保存全部完成作品' }}
+              </button>
+            </div>
             <transition-group name="card-list" tag="div" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
               <div v-for="(task, idx) in tasks" :key="task.slug + '_' + idx" 
                    class="glass-card rounded-3xl overflow-hidden flex flex-col justify-between transition-all duration-300 hover:shadow-xl hover:shadow-brand/15 hover:-translate-y-1">
@@ -322,6 +333,12 @@
                     </div>
                   </div>
 
+                  <div v-else-if="task.status === 'cancelled'" class="text-center space-y-2 p-4">
+                    <div class="text-3xl">⏸️</div>
+                    <p class="text-xs text-amber-600 font-bold">已停止，尚未完成绘制</p>
+                    <button @click="retryTask(task)" :disabled="isRendering" class="px-3.5 py-1.5 bg-amber-50 hover:bg-amber-100 text-amber-700 text-xs font-bold rounded-xl transition disabled:opacity-50">继续生成</button>
+                  </div>
+
                   <div v-else class="text-xs text-slate-400 font-medium flex items-center gap-1.5">
                     <span class="w-2 h-2 rounded-full bg-slate-300 animate-pulse"></span>
                     排队等待中...
@@ -331,7 +348,7 @@
                 <div class="p-4 bg-white/60 border-t border-brand-50 space-y-2.5">
                   <template v-if="task.status === 'done'">
                     <div class="flex items-center gap-2">
-                      <button @click="saveAndDismiss(task, idx)" 
+                      <button @click="saveAndDismiss(task, idx)"
                               class="flex-1 py-2 bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-600 hover:to-teal-600 text-white text-xs font-bold rounded-xl shadow-sm shadow-emerald-500/20 active:scale-95 transition">
                         💾 保存到本地
                       </button>
@@ -355,7 +372,7 @@
                     </div>
                   </template>
                   <div v-else class="text-center text-xs text-slate-400 py-1.5 font-medium">
-                    状态：{{ task.status === 'rendering' ? '绘制中' : task.status === 'error' ? '渲染异常' : '等待队列' }}
+                    状态：{{ task.status === 'rendering' ? '绘制中' : task.status === 'error' ? '渲染异常' : task.status === 'cancelled' ? '已停止' : '等待队列' }}
                   </div>
                 </div>
 
@@ -381,7 +398,7 @@
             </div>
             <button @click="playOink(); fetchGallery()" class="px-4 py-2 bg-white/90 hover:bg-brand-50 text-slate-700 text-xs font-bold rounded-xl border border-brand-100 shadow-sm transition flex items-center gap-1.5">
               <span>🔄</span> 刷新图库
-            </button>
+             </button>
           </div>
 
           <div v-if="gallery.length === 0" class="py-20 text-center text-slate-400 font-medium space-y-2">
@@ -393,7 +410,7 @@
             <div v-for="item in gallery" :key="item.filename" 
                  class="glass-card p-3 rounded-2xl group relative flex flex-col justify-between hover:shadow-lg transition duration-200">
               <div class="h-44 bg-slate-50/80 rounded-xl overflow-hidden flex items-center justify-center p-2">
-                <img :src="item.data" class="w-full h-full object-contain group-hover:scale-105 transition duration-300">
+                <img :src="item.url" class="w-full h-full object-contain group-hover:scale-105 transition duration-300">
               </div>
               <div class="mt-2.5 px-1 flex items-center justify-between">
                 <div class="truncate mr-2">
@@ -1048,6 +1065,8 @@
         availableModels: [],
         tasks: [],
         gallery: [],
+        batchAbortController: null,
+        isSavingAll: false,
         historyLogs: []
       };
     },
@@ -1357,19 +1376,33 @@
           this.tasks.unshift(...newTasks);
           this.isPlanning = false;
           
-          this.isRendering = true;
-          for (let task of newTasks) {
-            task.status = 'rendering';
-            await this.renderTask(task);
-          }
+           this.isRendering = true;
+           this.batchAbortController = new AbortController();
+           const queue = [...newTasks];
+           const workers = Array.from({ length: Math.min(3, queue.length) }, async () => {
+             while (queue.length && !this.batchAbortController.signal.aborted) {
+               const task = queue.shift();
+               task.status = 'rendering';
+               await this.renderTask(task, this.batchAbortController.signal);
+             }
+           });
+           await Promise.all(workers);
         } catch (e) {
           this.addLog('策划失败', e.message);
           this.showNotice('⚠️ 策划失败: ' + e.message, 'info');
         }
         this.isPlanning = false;
         this.isRendering = false;
+        this.batchAbortController = null;
       },
-      async renderTask(task) {
+      cancelBatchGeneration() {
+        if (this.batchAbortController) {
+          this.batchAbortController.abort();
+          this.addLog('停止批量生成', '已取消尚未开始的任务；正在请求中的任务可能已产生服务商费用');
+          this.showNotice('已停止后续批量任务', 'info');
+        }
+      },
+      async renderTask(task, signal = undefined) {
         try {
           const res = await fetch('/api/render-image', {
             method: 'POST',
@@ -1378,7 +1411,8 @@
               theme: task.theme,
               features: task.features,
               extra_feedback: task.extraFeedback
-            })
+            }),
+            signal
           });
           const data = await res.json();
           if (data.status === 'ok') {
@@ -1390,8 +1424,12 @@
             this.addLog('绘制异常', data.message);
           }
         } catch (e) {
-          task.status = 'error';
-          this.addLog('绘制异常', e.message);
+           if (e.name === 'AbortError') {
+             task.status = 'pending';
+             return;
+           }
+           task.status = 'error';
+           this.addLog('绘制异常', e.message);
         }
       },
       async retryTask(task) {
@@ -1447,6 +1485,42 @@
           this.showNotice('⚠️ 保存失败', 'info');
         }
       },
+      async saveAllTasks() {
+        const completedTasks = this.tasks.filter(task => task.status === 'done' && task.image);
+        if (!completedTasks.length || this.isSavingAll) return;
+
+        this.playOink();
+        this.isSavingAll = true;
+        const savedTasks = new Set();
+        let failures = 0;
+
+        for (const task of completedTasks) {
+          try {
+            const res = await fetch('/api/save-image', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ slug: task.slug, image_b64: task.image })
+            });
+            const data = await res.json();
+            if (data.status === 'ok') {
+              savedTasks.add(task);
+              this.addLog('保存小猪', `已存入: ${data.filename}`);
+            } else {
+              failures += 1;
+              this.addLog('保存失败', `${task.theme}猪: ${data.message || '服务端未返回详情'}`);
+            }
+          } catch (e) {
+            failures += 1;
+            this.addLog('保存失败', `${task.theme}猪: ${e.message}`);
+          }
+        }
+
+        this.tasks = this.tasks.filter(task => !savedTasks.has(task));
+        await this.fetchGallery();
+        this.isSavingAll = false;
+        const savedCount = savedTasks.size;
+        this.showNotice(failures ? `已保存 ${savedCount} 张，${failures} 张失败` : `已保存 ${savedCount} 张小猪`, failures ? 'info' : 'success');
+      },
       dismissTask(idx, theme = '', logNotice = true) {
         this.playOink();
         if (theme) this.addLog('移除卡片', `${theme}猪`);
@@ -1467,13 +1541,16 @@
           const res = await fetch('/api/delete-image', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ filename })
-          });
-          if (data.status === 'ok') {
+           body: JSON.stringify({ filename })
+           });
+           const data = await res.json();
+           if (data.status === 'ok') {
             this.addLog('删除小猪', `已从本地移除: ${filename}`);
             this.showNotice(`🗑️ 成功删除: ${filename}`, 'info');
             this.fetchGallery();
-          }
+           } else {
+             throw new Error(data.message || '删除失败');
+           }
         } catch (e) {
           alert('删除失败: ' + e.message);
         }
